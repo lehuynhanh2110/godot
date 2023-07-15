@@ -204,7 +204,6 @@ private:
 	float h = 0.0;
 	float s = 0.0;
 	float v = 0.0;
-	float cached_hue = 0.0;
 	Color last_color;
 
 	struct ThemeCache {
@@ -295,8 +294,6 @@ public:
 #ifdef TOOLS_ENABLED
 	void set_editor_settings(Object *p_editor_settings);
 #endif
-	float get_cached_hue() { return cached_hue; };
-
 	HSlider *get_slider(int idx);
 	Vector<float> get_active_slider_values();
 

@@ -1139,6 +1139,7 @@ GDScriptParser::ConstantNode *GDScriptParser::parse_constant(bool p_is_static) {
 	ConstantNode *constant = alloc_node<ConstantNode>();
 
 	if (!consume(GDScriptTokenizer::Token::IDENTIFIER, R"(Expected constant name after "const".)")) {
+		complete_extents(constant);
 		return nullptr;
 	}
 
@@ -1536,6 +1537,11 @@ GDScriptParser::SuiteNode *GDScriptParser::parse_suite(const String &p_context, 
 	suite->parent_function = current_function;
 	current_suite = suite;
 
+	if (!p_for_lambda && suite->parent_block != nullptr && suite->parent_block->is_in_loop) {
+		// Do not reset to false if true is set before calling parse_suite().
+		suite->is_in_loop = true;
+	}
+
 	bool multiline = false;
 
 	if (match(GDScriptTokenizer::Token::NEWLINE)) {
@@ -1871,9 +1877,8 @@ GDScriptParser::ForNode *GDScriptParser::parse_for() {
 		}
 		suite->add_local(SuiteNode::Local(n_for->variable, current_function));
 	}
-
+	suite->is_in_loop = true;
 	n_for->loop = parse_suite(R"("for" block)", suite);
-	n_for->loop->is_loop = true;
 	complete_extents(n_for);
 
 	// Reset break/continue state.
@@ -2143,6 +2148,7 @@ GDScriptParser::PatternNode *GDScriptParser::parse_match_pattern(PatternNode *p_
 			ExpressionNode *expression = parse_expression(false);
 			if (expression == nullptr) {
 				push_error(R"(Expected expression for match pattern.)");
+				complete_extents(pattern);
 				return nullptr;
 			} else {
 				if (expression->type == GDScriptParser::Node::LITERAL) {
@@ -2186,8 +2192,9 @@ GDScriptParser::WhileNode *GDScriptParser::parse_while() {
 	can_break = true;
 	can_continue = true;
 
-	n_while->loop = parse_suite(R"("while" block)");
-	n_while->loop->is_loop = true;
+	SuiteNode *suite = alloc_node<SuiteNode>();
+	suite->is_in_loop = true;
+	n_while->loop = parse_suite(R"("while" block)", suite);
 	complete_extents(n_while);
 
 	// Reset break/continue state.
@@ -2231,7 +2238,7 @@ GDScriptParser::ExpressionNode *GDScriptParser::parse_precedence(Precedence p_pr
 	ExpressionNode *previous_operand = (this->*prefix_rule)(nullptr, p_can_assign);
 
 	while (p_precedence <= get_rule(current.type)->precedence) {
-		if (previous_operand == nullptr || (p_stop_on_assign && current.type == GDScriptTokenizer::Token::EQUAL) || (previous_operand->type == Node::LAMBDA && lambda_ended)) {
+		if (previous_operand == nullptr || (p_stop_on_assign && current.type == GDScriptTokenizer::Token::EQUAL) || lambda_ended) {
 			return previous_operand;
 		}
 		// Also switch multiline mode on here for infix operators.
@@ -3224,7 +3231,7 @@ GDScriptParser::ExpressionNode *GDScriptParser::parse_type_test(ExpressionNode *
 }
 
 GDScriptParser::ExpressionNode *GDScriptParser::parse_yield(ExpressionNode *p_previous_operand, bool p_can_assign) {
-	push_error(R"("yield" was removed in Godot 4.0. Use "await" instead.)");
+	push_error(R"("yield" was removed in Godot 4. Use "await" instead.)");
 	return nullptr;
 }
 
@@ -3827,8 +3834,12 @@ bool GDScriptParser::onready_annotation(const AnnotationNode *p_annotation, Node
 	}
 
 	VariableNode *variable = static_cast<VariableNode *>(p_node);
+	if (variable->is_static) {
+		push_error(R"("@onready" annotation cannot be applied to a static variable.)", p_annotation);
+		return false;
+	}
 	if (variable->onready) {
-		push_error(R"("@onready" annotation can only be used once per variable.)");
+		push_error(R"("@onready" annotation can only be used once per variable.)", p_annotation);
 		return false;
 	}
 	variable->onready = true;
@@ -3841,6 +3852,10 @@ bool GDScriptParser::export_annotations(const AnnotationNode *p_annotation, Node
 	ERR_FAIL_COND_V_MSG(p_node->type != Node::VARIABLE, false, vformat(R"("%s" annotation can only be applied to variables.)", p_annotation->name));
 
 	VariableNode *variable = static_cast<VariableNode *>(p_node);
+	if (variable->is_static) {
+		push_error(vformat(R"(Annotation "%s" cannot be applied to a static variable.)", p_annotation->name), p_annotation);
+		return false;
+	}
 	if (variable->exported) {
 		push_error(vformat(R"(Annotation "%s" cannot be used with another "@export" annotation.)", p_annotation->name), p_annotation);
 		return false;

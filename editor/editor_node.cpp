@@ -60,7 +60,9 @@
 #include "scene/gui/tab_container.h"
 #include "scene/main/window.h"
 #include "scene/property_utils.h"
+#include "scene/resources/image_texture.h"
 #include "scene/resources/packed_scene.h"
+#include "scene/resources/portable_compressed_texture.h"
 #include "servers/display_server.h"
 #include "servers/navigation_server_3d.h"
 #include "servers/physics_server_2d.h"
@@ -983,7 +985,7 @@ void EditorNode::_fs_changed() {
 				} else { // Normal project export.
 					String config_error;
 					bool missing_templates;
-					if (!platform->can_export(export_preset, config_error, missing_templates)) {
+					if (!platform->can_export(export_preset, config_error, missing_templates, export_defer.debug)) {
 						ERR_PRINT(vformat("Cannot export project with preset \"%s\" due to configuration errors:\n%s", preset_name, config_error));
 						err = missing_templates ? ERR_FILE_NOT_FOUND : ERR_UNCONFIGURED;
 					} else {
@@ -1411,7 +1413,7 @@ void EditorNode::_dialog_display_load_error(String p_file, Error p_error) {
 				show_accept(vformat(TTR("Scene file '%s' appears to be invalid/corrupt."), p_file.get_file()), TTR("OK"));
 			} break;
 			case ERR_FILE_NOT_FOUND: {
-				show_accept(vformat(TTR("Missing file '%s' or one its dependencies."), p_file.get_file()), TTR("OK"));
+				show_accept(vformat(TTR("Missing file '%s' or one of its dependencies."), p_file.get_file()), TTR("OK"));
 			} break;
 			default: {
 				show_accept(vformat(TTR("Error while loading file '%s'."), p_file.get_file()), TTR("OK"));
@@ -3408,6 +3410,7 @@ void EditorNode::_remove_edited_scene(bool p_change_tab) {
 
 void EditorNode::_remove_scene(int index, bool p_change_tab) {
 	// Clear icon cache in case some scripts are no longer needed.
+	// FIXME: Perfectly the cache should never be cleared and only updated on per-script basis, when an icon changes.
 	editor_data.clear_script_icon_cache();
 
 	if (editor_data.get_edited_scene() == index) {
@@ -4242,23 +4245,6 @@ Ref<Texture2D> EditorNode::_get_class_or_script_icon(const String &p_class, cons
 		Ref<Texture2D> script_icon = ed.get_script_icon(p_script);
 		if (script_icon.is_valid()) {
 			return script_icon;
-		}
-
-		// No custom icon was found in the inheritance chain, so check the base
-		// class of the script instead.
-		String base_type;
-		p_script->get_language()->get_global_class_name(p_script->get_path(), &base_type);
-
-		// Check if the base type is an extension-defined type.
-		Ref<Texture2D> ext_icon = ed.extension_class_get_icon(base_type);
-		if (ext_icon.is_valid()) {
-			return ext_icon;
-		}
-
-		// Look for the base type in the editor theme.
-		// This is only relevant for built-in classes.
-		if (gui_base && gui_base->has_theme_icon(base_type, "EditorIcons")) {
-			return gui_base->get_theme_icon(base_type, "EditorIcons");
 		}
 	}
 
@@ -5263,6 +5249,8 @@ void EditorNode::_save_central_editor_layout_to_config(Ref<ConfigFile> p_config_
 	}
 	if (selected_bottom_panel_item_idx != -1) {
 		p_config_file->set_value(EDITOR_NODE_CONFIG_SECTION, "selected_bottom_panel_item", selected_bottom_panel_item_idx);
+	} else {
+		p_config_file->set_value(EDITOR_NODE_CONFIG_SECTION, "selected_bottom_panel_item", Variant());
 	}
 
 	// Debugger tab.
@@ -5281,21 +5269,34 @@ void EditorNode::_save_central_editor_layout_to_config(Ref<ConfigFile> p_config_
 	}
 	if (selected_main_editor_idx != -1) {
 		p_config_file->set_value(EDITOR_NODE_CONFIG_SECTION, "selected_main_editor_idx", selected_main_editor_idx);
+	} else {
+		p_config_file->set_value(EDITOR_NODE_CONFIG_SECTION, "selected_main_editor_idx", Variant());
 	}
 }
 
 void EditorNode::_load_central_editor_layout_from_config(Ref<ConfigFile> p_config_file) {
 	// Bottom panel.
 
-	if (p_config_file->has_section_key(EDITOR_NODE_CONFIG_SECTION, "center_split_offset")) {
-		int center_split_offset = p_config_file->get_value(EDITOR_NODE_CONFIG_SECTION, "center_split_offset");
-		center_split->set_split_offset(center_split_offset);
-	}
-
+	bool has_active_tab = false;
 	if (p_config_file->has_section_key(EDITOR_NODE_CONFIG_SECTION, "selected_bottom_panel_item")) {
 		int selected_bottom_panel_item_idx = p_config_file->get_value(EDITOR_NODE_CONFIG_SECTION, "selected_bottom_panel_item");
 		if (selected_bottom_panel_item_idx >= 0 && selected_bottom_panel_item_idx < bottom_panel_items.size()) {
-			_bottom_panel_switch(true, selected_bottom_panel_item_idx);
+			// Make sure we don't try to open contextual editors which are not enabled in the current context.
+			if (bottom_panel_items[selected_bottom_panel_item_idx].button->is_visible()) {
+				_bottom_panel_switch(true, selected_bottom_panel_item_idx);
+				has_active_tab = true;
+			}
+		}
+	}
+
+	if (p_config_file->has_section_key(EDITOR_NODE_CONFIG_SECTION, "center_split_offset")) {
+		int center_split_offset = p_config_file->get_value(EDITOR_NODE_CONFIG_SECTION, "center_split_offset");
+		center_split->set_split_offset(center_split_offset);
+
+		// If there is no active tab we need to collapse the panel.
+		if (!has_active_tab) {
+			bottom_panel_items[0].control->show(); // _bottom_panel_switch() can collapse only visible tabs.
+			_bottom_panel_switch(false, 0);
 		}
 	}
 
